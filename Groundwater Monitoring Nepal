@@ -1,1 +1,125 @@
 
+// Groundwater Monitoring Analysis using GLDAS dataset in Google Earth Engine
+// GLDAS - Global Land Data Assimilation System 
+// Define two points of interest for groundwater monitoring
+var location1 =  [85.04018953204442,28.03152036863905]
+var location2 = [86.03994539141942,27.569906241108587]
+
+// Create features for the two points
+var pointFeature1 = ee.Feature(ee.Geometry.Point(location1));
+var pointFeature2 = ee.Feature(ee.Geometry.Point(location2));
+Map.addLayer(pointFeature1, {}, 'point1');
+Map.addLayer(pointFeature2, {}, 'point2');
+
+// Combine the points into a feature collection
+var pointsCollection = ee.FeatureCollection([pointFeature1, pointFeature2]);
+
+/*
+This line creates a FeatureCollection that contains the two geographical points, pointFeature1 and pointFeature2. 
+This collection can now be used in analysis, such as spatial queries, time series analysis
+*/
+
+// Add country boundary layer
+var countries = ee.FeatureCollection('USDOS/LSIB_SIMPLE/2017');
+var Nepal = countries.filter(ee.Filter.eq('country_na', 'Nepal'));
+Map.addLayer(Nepal, {}, 'Nepal', false);
+Map.centerObject(Nepal, 4);
+
+// Set the time period for groundwater data
+var startDate = ee.Date('2003');
+var endDate = ee.Date('2024');
+var timeDifference = endDate.difference(startDate, 'month').round();
+print(timeDifference)
+
+// Load the Global Land Data Assimilation System (GLDAS) dataset groundwater storage data
+var groundwaterData = ee.ImageCollection("NASA/GLDAS/V022/CLSM/G025/DA1D")
+  .select('GWS_tavg') // Groundwater storage average
+  .filterDate(startDate, endDate);
+
+
+// Generate a list of dates for each month during the time period
+var dateList = ee.List.sequence(0, ee.Number(timeDifference).subtract(1), 1).map(function(delta) {
+  return ee.Date(startDate).advance(delta, 'month');
+});
+/*
+var dateList = ee.List.sequence(0, ee.Number(timeDifference).subtract(1), 1): Creates a list of numbers representing the progression of months.
+
+.map(function(delta) { ... }): Applies the advance(delta, 'month') function to create a corresponding date for each month in the sequence.
+
+ee.Date(startDate).advance(delta, 'month'): Takes the start date and advances it by delta months, 
+returning a list of dates, each representing the start of a new month.
+*/
+
+
+print(dateList)
+
+
+// Create a monthly ImageCollection by averaging data for each month
+var monthlyGW = ee.ImageCollection(dateList.map(function(date) {
+  var start = ee.Date(date);
+  var end = start.advance(1, 'month');
+  var monthlyAverage = groundwaterData.filterDate(start, end).mean().rename('Groundwater');
+  var numBands = monthlyAverage.bandNames().size();
+  
+  
+  /*
+var numBands = monthlyAverage.bandNames().size();
+
+The variable numBands stores the number of bands in the monthlyAverage image.
+It retrieves the list of band names in the image using bandNames() and calculates how many bands exist using .size().
+*/
+
+return monthlyAverage
+    .set('system:time_start', start.millis())
+    .set('system:time_end', end.millis())
+    .set('system:index', start.format('YYYY-MM-dd'))
+    .set('num_bands', ee.Number(numBands));
+}))
+.filter(ee.Filter.gt('num_bands', 0));
+  
+  
+ // Generate a time series chart of mean groundwater data for the Nepal
+var groundwaterChart = ui.Chart.image.series({
+  imageCollection: monthlyGW,
+  region: Nepal,
+  reducer: ee.Reducer.mean(),
+  scale: 27000,
+  xProperty: 'system:time_start'
+}).setOptions({
+  title: 'Mean Groundwater Data for Nepal',
+  hAxis: {title: 'Time'},
+  vAxis: {title: 'Mean Groundwater Storage (GWS_tavg)'},
+  colors: ['green'] // Set the line colors to green
+});
+
+// Print the groundwater chart for the Nepal
+print(groundwaterChart);
+
+// Generate a time series chart for specific locations (the two points)
+var pointChart = ui.Chart.image.seriesByRegion({
+  imageCollection: monthlyGW,
+  regions: pointsCollection,
+  reducer: ee.Reducer.first(),
+  band: 'Groundwater',
+  scale: 27000,
+  xProperty: 'system:time_start'
+}).setOptions({
+  title: 'Groundwater Data for Selected Points',
+  hAxis: {title: 'Time'},
+  vAxis: {title: 'Groundwater Storage (GWS_tavg)'},
+  colors: ['green', 'red', 'yellow'] // Set the line colors to green, red, and yellow
+});
+
+// Print the chart for the specific points
+print(pointChart);
+
+
+// Export the groundwater data as an image to Google Drive
+Export.image.toDrive({
+  image: monthlyGW.toBands().clip(Nepal),
+  description: 'Groundwater_Monitoring',
+  scale: 27000,
+  region:Nepal,
+  crs: 'EPSG:4326',
+  folder: 'groundwater_data_export'
+});
